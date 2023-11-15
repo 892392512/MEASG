@@ -1,13 +1,12 @@
 # MEASG
 MEASG： Multi-Encoder and Abstract Syntax Graph for Code Summarization 
 # Requirements
-pytorch>=1.4.1
-tqdm
-nltk
+pytorch>=1.4.1 \
+tqdm \
+nltk \
 torch_geometric
-
 ### The following code should be run in advance.
-import nltk
+import nltk \
 nltk.download('wordnet')
 
 # Dataset
