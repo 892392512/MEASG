@@ -25,7 +25,6 @@ def init_rnn_wt(rnn):
                 wt = getattr(rnn, name)
                 wt.data.uniform_(-config.init_uniform_mag, config.init_uniform_mag)
             elif name.startswith('bias_'):
-                # set forget bias to 1
                 bias = getattr(rnn, name)
                 n = bias.size(0)
                 start, end = n // 4, n // 2
@@ -63,37 +62,24 @@ def init_wt_uniform(wt):
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, dropout=0.1, max_len=5000):  # ninp, dropout
-        '''
-            :param d_model: 词嵌入维度
-            :param dropout: 丢失率
-            :param max_len: 每个句子的最长长度
-            注释内假定d_model=200
-        '''
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
+        pe = torch.zeros(max_len, d_model)
 
-        pe = torch.zeros(max_len, d_model) 
-
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)  
-
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(
             10000.0) / d_model))
-
-
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-
-        pe = pe.unsqueeze(0).transpose(0, 1)  
-
+        pe = pe.unsqueeze(0).transpose(0, 1)
         self.register_buffer('pe', pe)
         if config.use_cuda:
             self.cuda(device=config.device)
 
     def forward(self, x):
-        x = x + self.pe[:x.size()[0], :]        
+        x = x + self.pe[:x.size()[0], :]
         return self.dropout(x)
-
 
 class TransformerEncoder(nn.Module):
     """
@@ -104,9 +90,7 @@ class TransformerEncoder(nn.Module):
         super(TransformerEncoder, self).__init__()
         self.hidden_size = config.hidden_size
         self.num_directions = 2
-
-
-        self.embedding = nn.Embedding(vocab_size, config.embedding_dim)  
+        self.embedding = nn.Embedding(vocab_size, config.embedding_dim)
         self.gru = nn.GRU(config.embedding_dim, self.hidden_size, bidirectional=True)
 
         self.transformer_layer = nn.TransformerEncoderLayer(d_model=self.hidden_size, nhead=8)
@@ -127,12 +111,9 @@ class TransformerEncoder(nn.Module):
         :return: outputs: [T, B, H]
                 hidden: [2, B, H]
         """
-
-        embedded = self.embedding(inputs) * math.sqrt(self.hidden_size)  # [T, B, embedding_dim]
+        embedded = self.embedding(inputs) * math.sqrt(self.hidden_size)
         outputs = self.pos_encoder(embedded)
         outputs = self.transformer_encoder(outputs)
-
-
         return outputs
 
     def init_hidden(self, batch_size):
@@ -149,7 +130,7 @@ class SourceEncoder(nn.Module):
         self.hidden_size = config.hidden_size
         self.num_directions = 2
 
-        self.embedding = nn.Embedding(vocab_size, config.embedding_dim)  
+        self.embedding = nn.Embedding(vocab_size, config.embedding_dim)
         self.gru = nn.GRU(config.embedding_dim, self.hidden_size, bidirectional=True)
 
         self.encoder_layer = nn.TransformerEncoderLayer(d_model=256, nhead=8)
@@ -169,17 +150,11 @@ class SourceEncoder(nn.Module):
                 hidden: [2, B, H]
         """
 
-        embedded = self.embedding(inputs)  
-
+        embedded = self.embedding(inputs)
         packed = pack_padded_sequence(embedded, seq_lens, enforce_sorted=False)
-
-        outputs, hidden = self.gru(packed)
-
-        outputs, _ = pad_packed_sequence(outputs)  
-
-        outputs = outputs[:, :, :self.hidden_size] + outputs[:, :, self.hidden_size:]
-
-
+        output, hidden = self.gru(packed)
+        outputs = self.pos_encoder(embedded)
+        outputs = self.transformer_encoder(outputs)
         return outputs, hidden
 
     def init_hidden(self, batch_size):
@@ -199,38 +174,33 @@ class SSRvNNEncoder(nn.Module):
         self.graph_set = None
         self.model_input = []
 
-        self.embedding = nn.Embedding(vocab_size, config.embedding_dim)  
+        self.embedding = nn.Embedding(vocab_size, config.embedding_dim)
         self.gru = nn.GRU(config.embedding_dim, self.hidden_size, bidirectional=True)
-
-
 
         self.GATv2 = GATv2Conv(embedding_dim, embedding_dim, edge_dim=1)
 
         self.dropout = nn.Dropout(0.2)
-
-
         init_rnn_wt(self.gru)
         if config.use_cuda:
             self.cuda(device=config.device)
 
     def forward(self, inputs, sliced_flatten_ast_lens, batch_size):
-
         self.batch_size = batch_size
-        embedded = self.embedding(inputs[0])  # [T, B, embedding_dim]
+        embedded = self.embedding(inputs[0])
 
         self.GNNData_prepare(embedded, inputs[1], sliced_flatten_ast_lens)
 
         data = self.model_input
         x, edge_index, edge_weight = data.x, data.edge_index, data.edge_attr
 
-        x = self.GATv2(x, edge_index, edge_weight)  # x:[T*B, H]
+        x = self.GATv2(x, edge_index, edge_weight)
 
-        x = torch.unsqueeze(x, 1)  # x:[T*B, 1, H]
-        x = torch.chunk(x, self.batch_size, dim=0)  # x:64 tuple [T,H]
-        x = torch.cat(x, dim=1)  # x:[T,B,H]
+        x = torch.unsqueeze(x, 1)
+        x = torch.chunk(x, self.batch_size, dim=0)
+        x = torch.cat(x, dim=1)
         x = torch.transpose(x, 0, 1)
 
-        x = torch.split(x, sliced_flatten_ast_lens, dim=1)  
+        x = torch.split(x, sliced_flatten_ast_lens, dim=1)
         ans = None
         for i, temp_x in enumerate(x):
             C = temp_x.shape[1]
@@ -242,39 +212,27 @@ class SSRvNNEncoder(nn.Module):
             else:
                 ans = torch.cat((ans, e), dim=1)
 
-
-        x = torch.transpose(ans, 0, 1)  # x: [T, B, H]
+        x = torch.transpose(ans, 0, 1)
         outputs, hidden = self.gru(x)
-
         outputs = outputs[:, :, :self.hidden_size] + outputs[:, :, self.hidden_size:]
-        # outputs:[subT,B.H] hidden:[2,B,H]
-        return outputs, hidden  
-        # return outputs, hidden
 
+        return outputs, hidden
     def GNNData_prepare(self, embedded, degree, sliced_flatten_ast_lens):
-        # embedded[T,B,H]
+
         temp_embedding = torch.chunk(embedded, self.batch_size, dim=1)
         temp_embedding = torch.stack(temp_embedding, dim=0)
-        temp_embedding = torch.squeeze(temp_embedding)  # [B, T, H]
+        temp_embedding = torch.squeeze(temp_embedding)
 
         temp_embedding = torch.split(temp_embedding, sliced_flatten_ast_lens, dim=1)
-
-
-
         self.embedding_ast = temp_embedding
         del temp_embedding
 
-
         self.graph_set = []
-        subtreeIndex = 0  
-
+        subtreeIndex = 0
         for a_net_data in self.embedding_ast:
-
-            self.graph_set.append(Gen_graph(a_net_data, degree, subtreeIndex))  # [X,B,H]
+            self.graph_set.append(Gen_graph(a_net_data, degree, subtreeIndex))
             subtreeIndex = subtreeIndex + 1
-
         graphSet = []
-
         for i1 in range(0, self.batch_size):
             for i2 in range(0, len(self.graph_set)):
                 graphSet.append(self.graph_set[i2][i1])
@@ -282,30 +240,19 @@ class SSRvNNEncoder(nn.Module):
         dataloader = DataLoader(graphSet, batch_size=self.batch_size*len(self.graph_set),
                                           shuffle=False,
                                           num_workers=0)
-
         del graphSet
-
 
         for data in dataloader:
             self.model_input = data.to(config.device)
-
-
-# KNNGraph
 def Gen_graph(data, degree, subtreeIndex):
     loal_distance = []
     data_list = []
     pdist = nn.PairwiseDistance(p=2)
 
-    for i in range(len(data)): 
+    for i in range(len(data)):
         graph_feature = data[i]
-
-        edge_raw0 = []
-        edge_raw1 = []
-        node_edge = []
         w = []
-
-
-        if subtreeIndex >= len(degree[i]): 
+        if subtreeIndex >= len(degree[i]):
             node_edge = [[0], [1]]
             edge_index = torch.tensor(node_edge, dtype=torch.long).cuda(device=config.device)
             w = np.hstack((w, 0.00001))
@@ -315,23 +262,14 @@ def Gen_graph(data, degree, subtreeIndex):
             graph = Data(x=graph_feature, edge_index=edge_index, edge_attr=edge_features)
             data_list.append(graph)
         else:
-           
-
             node_edge = torch.tensor(degree[i][subtreeIndex]).cuda(device=config.device)
             start_node_matrix = torch.index_select(graph_feature, 0, node_edge[0])
             end_node_matrix = torch.index_select(graph_feature, 0, node_edge[1])
-
             w = pdist(start_node_matrix, end_node_matrix)
-
-            beata = torch.mean(w)  
-
+            beata = torch.mean(w)
             loal_weigt = torch.exp((-(w) ** 2) / (2 * (beata ** 2)))
-
-
             graph = Data(x=graph_feature, edge_index=node_edge, edge_attr=loal_weigt)
-
             data_list.append(graph)
-
     return data_list
 
 
@@ -354,7 +292,6 @@ class ReduceHidden(nn.Module):
         :param ast_hidden: hidden state of ast encoder, [1, B, H]
         :return: [1, B, H]
         """
-
         hidden = torch.cat((code_hidden, ast_hidden), dim=2)
         hidden = self.linear(hidden)
         hidden = F.relu(hidden)
@@ -368,7 +305,7 @@ class Attention(nn.Module):
         self.hidden_size = hidden_size
 
         self.attn = nn.Linear(2 * self.hidden_size, self.hidden_size)
-        self.v = nn.Parameter(torch.rand(self.hidden_size), requires_grad=True)  # [H]
+        self.v = nn.Parameter(torch.rand(self.hidden_size), requires_grad=True)
         stdv = 1. / math.sqrt(self.v.size(0))
         self.v.data.normal_(mean=0, std=stdv)
         if config.use_cuda:
@@ -382,12 +319,11 @@ class Attention(nn.Module):
         :return: softmax scores, [B, 1, T]
         """
         time_step, batch_size, _ = encoder_outputs.size()
-        h = hidden.repeat(time_step, 1, 1).transpose(0, 1)  # [B, T, H]
-        encoder_outputs = encoder_outputs.transpose(0, 1)  # [B, T, H]
+        h = hidden.repeat(time_step, 1, 1).transpose(0, 1)
+        encoder_outputs = encoder_outputs.transpose(0, 1)
 
-        attn_energies = self.score(h, encoder_outputs)  # [B, T]
-
-        attn_weights = F.softmax(attn_energies, dim=1).unsqueeze(1)  # [B, 1, T]
+        attn_energies = self.score(h, encoder_outputs)
+        attn_weights = F.softmax(attn_energies, dim=1).unsqueeze(1)
 
         return attn_weights
 
@@ -398,13 +334,10 @@ class Attention(nn.Module):
         :param encoder_outputs: [B, T, H]
         :return: energy: scores of each word in a batch, [B, T]
         """
-        # after cat: [B, T, 2/3*H]
-        # after attn: [B, T, H]
-        # energy: [B, T, H]
-        energy = F.relu(self.attn(torch.cat([hidden, encoder_outputs], dim=2)))  # [B, T, H]
-        energy = energy.transpose(1, 2)  # [B, H, T]
-        v = self.v.repeat(encoder_outputs.size(0), 1).unsqueeze(1)  # [B, 1, H]
-        energy = torch.bmm(v, energy)  # [B, 1, T]
+        energy = F.relu(self.attn(torch.cat([hidden, encoder_outputs], dim=2)))
+        energy = energy.transpose(1, 2)
+        v = self.v.repeat(encoder_outputs.size(0), 1).unsqueeze(1)
+        energy = torch.bmm(v, energy)
         return energy.squeeze(1)
 
 
@@ -413,7 +346,6 @@ class Decoder(nn.Module):
     def __init__(self, vocab_size, hidden_size=config.hidden_size):
         super(Decoder, self).__init__()
         self.hidden_size = hidden_size
-
 
         self.embedding = nn.Embedding(vocab_size, config.embedding_dim)
         self.dropout = nn.Dropout(config.decoder_dropout_rate)
@@ -425,7 +357,6 @@ class Decoder(nn.Module):
 
         if config.use_pointer_gen:
             self.p_gen_linear = nn.Linear(2 * self.hidden_size + config.embedding_dim, 1)
-
 
         init_wt_normal(self.embedding.weight)
         init_rnn_wt(self.gru)
@@ -448,51 +379,44 @@ class Decoder(nn.Module):
                 hidden: [1, B, H]
                 attn_weights: [B, 1, T]
         """
+        embedded = self.embedding(inputs).unsqueeze(0)
+        source_attn_weights = self.source_attention(last_hidden, source_outputs)
+        source_context = source_attn_weights.bmm(source_outputs.transpose(0, 1))
+        source_context = source_context.transpose(0, 1)
 
-        embedded = self.embedding(inputs).unsqueeze(0)  # [1, B, embedding_dim]
+        code_attn_weights = self.code_attention(last_hidden, code_outputs)
 
-        source_attn_weights = self.source_attention(last_hidden, source_outputs)  # [B, 1, T]
-        source_context = source_attn_weights.bmm(source_outputs.transpose(0, 1))  # [B, 1, H]
-        source_context = source_context.transpose(0, 1)  # [1, B, H]
+        code_context = code_attn_weights.bmm(code_outputs.transpose(0, 1))
+        code_context = code_context.transpose(0, 1)
 
-        code_attn_weights = self.code_attention(last_hidden, code_outputs)  # [B, 1, T]
-
-        code_context = code_attn_weights.bmm(code_outputs.transpose(0, 1))  # [B, 1, H]
-        code_context = code_context.transpose(0, 1)  # [1, B, H]
-
-        ast_attn_weights = self.ast_attention(last_hidden, ast_outputs)  # [B, 1, T]
-        ast_context = ast_attn_weights.bmm(ast_outputs.transpose(0, 1))  # [B, 1, H]
-        ast_context = ast_context.transpose(0, 1)  # [1, B, H]
-
-
-        context = 0 * source_context + code_context + ast_context  # [1, B, H]
+        ast_attn_weights = self.ast_attention(last_hidden, ast_outputs)
+        ast_context = ast_attn_weights.bmm(ast_outputs.transpose(0, 1))
+        ast_context = ast_context.transpose(0, 1)
+        context = 0.5 * source_context + 0.5 * code_context + ast_context
 
         p_gen = None
         if config.use_pointer_gen:
 
-            p_gen_input = torch.cat([context, last_hidden, embedded], dim=2)  
+            p_gen_input = torch.cat([context, last_hidden, embedded], dim=2)
             p_gen = self.p_gen_linear(p_gen_input)
-            p_gen = torch.sigmoid(p_gen)  # [1, B, 1]
-            p_gen = p_gen.squeeze(0)  # [B, 1]
+            p_gen = torch.sigmoid(p_gen)
+            p_gen = p_gen.squeeze(0)
 
-        rnn_input = torch.cat([embedded, context], dim=2) 
-        outputs, hidden = self.gru(rnn_input, last_hidden) 
+        rnn_input = torch.cat([embedded, context], dim=2)
+        outputs, hidden = self.gru(rnn_input, last_hidden)
 
-
-        outputs = outputs.squeeze(0)  # [B, H]
-        context = context.squeeze(0)  # [B, H]
-
-        vocab_dist = self.out(torch.cat([outputs, context], 1))  # [B, nl_vocab_size]
-        vocab_dist = F.softmax(vocab_dist, dim=1)  
+        outputs = outputs.squeeze(0)
+        context = context.squeeze(0)
+        vocab_dist = self.out(torch.cat([outputs, context], 1))
+        vocab_dist = F.softmax(vocab_dist, dim=1)
 
         if config.use_pointer_gen:
-            vocab_dist_ = p_gen * vocab_dist  
-            source_attn_weights_ = source_attn_weights.squeeze(1)  
-            attn_dist = (1 - p_gen) * source_attn_weights_  
-
+            vocab_dist_ = p_gen * vocab_dist
+            source_attn_weights_ = source_attn_weights.squeeze(1)
+            attn_dist = (1 - p_gen) * source_attn_weights_
 
             if extra_zeros is not None:
-                vocab_dist_ = torch.cat([vocab_dist_, extra_zeros], dim=1)  # [B, V+max_oov_num]
+                vocab_dist_ = torch.cat([vocab_dist_, extra_zeros], dim=1)
 
             final_dist = vocab_dist_.scatter_add(1, extend_source_batch, attn_dist)
 
@@ -509,12 +433,10 @@ class Model(nn.Module):
     def __init__(self, source_vocab_size, code_vocab_size, ast_vocab_size, nl_vocab_size, model=None, is_eval=False):
         super(Model, self).__init__()
 
-
         self.source_vocab_size = source_vocab_size
         self.code_vocab_size = code_vocab_size
         self.ast_vocab_size = ast_vocab_size
         self.is_eval = is_eval
-
 
         self.source_encoder = TransformerEncoder(self.source_vocab_size)
         self.code_encoder = SourceEncoder(self.code_vocab_size)
@@ -544,23 +466,21 @@ class Model(nn.Module):
         :param is_test: if True, function will return before decoding
         :return: decoder_outputs: [T, B, nl_vocab_size]
         """
-
         source_batch, source_seq_lens, code_batch, code_seq_lens, \
             ast_batch, ast_seq_lens, nl_batch, nl_seq_lens = batch.get_regular_input()
 
         sliced_flatten_ast, sliced_flatten_ast_lens = batch.get_sliced_flatten_ast()
-
 
         source_outputs = self.source_encoder(source_batch, source_seq_lens)
         code_outputs, code_hidden = self.code_encoder(code_batch, code_seq_lens)
         ast_outputs, ast_hidden = self.ast_encoder(sliced_flatten_ast, sliced_flatten_ast_lens, batch_size)
 
 
-        code_hidden = code_hidden[0] + code_hidden[1]   # [B, H]
-        code_hidden = code_hidden.unsqueeze(0)          # [1, B, H]
-        ast_hidden = ast_hidden[0] + ast_hidden[1]  # [B, H]
-        ast_hidden = ast_hidden.unsqueeze(0)       
-        decoder_hidden = self.reduce_hidden(code_hidden, ast_hidden)  # [1, B, H]
+        code_hidden = code_hidden[0] + code_hidden[1]
+        code_hidden = code_hidden.unsqueeze(0)
+        ast_hidden = ast_hidden[0] + ast_hidden[1]
+        ast_hidden = ast_hidden.unsqueeze(0)
+        decoder_hidden = self.reduce_hidden(code_hidden, ast_hidden)
 
         if is_test:
             return source_outputs, code_outputs, ast_outputs, decoder_hidden
@@ -570,7 +490,7 @@ class Model(nn.Module):
         else:
             max_decode_step = max(nl_seq_lens)
 
-        decoder_inputs = utils.init_decoder_inputs(batch_size=batch_size, vocab=nl_vocab)  # [B]
+        decoder_inputs = utils.init_decoder_inputs(batch_size=batch_size, vocab=nl_vocab)
 
         extend_source_batch = None
         extra_zeros = None
@@ -582,7 +502,6 @@ class Model(nn.Module):
             decoder_outputs = torch.zeros((max_decode_step, batch_size, config.nl_vocab_size), device=config.device)
 
         for step in range(max_decode_step):
-
             decoder_output, decoder_hidden, source_attn_weights, code_attn_weights, ast_attn_weights, _ = self.decoder(
                 inputs=decoder_inputs,
                 last_hidden=decoder_hidden,
@@ -597,16 +516,15 @@ class Model(nn.Module):
 
                 decoder_inputs = nl_batch[step]
             else:
-
-                _, indices = decoder_output.topk(1)  # [B, 1]
+                _, indices = decoder_output.topk(1)
                 if config.use_pointer_gen:
-                    word_indices = indices.squeeze(1).detach().cpu().numpy()  # [B]
+                    word_indices = indices.squeeze(1).detach().cpu().numpy()
                     decoder_inputs = []
                     for index in word_indices:
                         decoder_inputs.append(utils.tune_up_decoder_input(index, nl_vocab))
                     decoder_inputs = torch.tensor(decoder_inputs, device=config.device)
                 else:
-                    decoder_inputs = indices.squeeze(1).detach()  # [B]
+                    decoder_inputs = indices.squeeze(1).detach()
                     decoder_inputs = decoder_inputs.to(config.device)
 
         return decoder_outputs
