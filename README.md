@@ -14,5 +14,5 @@ Using the funcom dataset, the following link follows:
 https://s3.us-east-2.amazonaws.com/icse2018/index.html
 
 # Eval 
-cd EvaluationMetrics
+cd EvaluationMetrics \
 python MEASG_score.py
